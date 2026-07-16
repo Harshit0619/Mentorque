@@ -152,6 +152,7 @@ http://localhost:5173
 
 ```bash
 cd backend
+npm run build
 npm start
 ```
 
@@ -218,6 +219,7 @@ All seeded accounts use:
 ### Backend scripts
 
 ```bash
+npm run build
 npm run dev
 npm start
 npm run db:generate
