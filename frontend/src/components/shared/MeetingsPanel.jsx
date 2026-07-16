@@ -1,12 +1,7 @@
-import { useEffect, useState } from "react";
-import { api } from "../../services/api";
+import { useMeetings } from "../../hooks/useMeetings";
 
 export function MeetingsPanel({ session }) {
-  const [meetings, setMeetings] = useState([]);
-
-  useEffect(() => {
-    api("/api/meetings", { token: session.token }).then(setMeetings).catch(() => setMeetings([]));
-  }, [session.token]);
+  const { meetings } = useMeetings(session.token, session.user);
 
   return (
     <section className="panel">

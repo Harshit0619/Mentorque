@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 import { DAYS, HOURS } from "../../constants";
 import { api } from "../../services/api";
-import { weekStartString } from "../../utils/date";
+import { buildWeekDays, formatWeekRangeLabel, weekStartString } from "../../utils/date";
 import { parseOwnerQuery } from "../../utils/owner";
 
-function FragmentRow({ hour, activeSlots, toggleSlot, readOnly }) {
+function FragmentRow({ hour, activeSlots, toggleSlot, readOnly, selectedDayIndex }) {
   return (
     <>
       <div className="grid-time">{String(hour).padStart(2, "0")}:00</div>
@@ -15,7 +15,7 @@ function FragmentRow({ hour, activeSlots, toggleSlot, readOnly }) {
           <button
             type="button"
             key={key}
-            className={`slot ${active ? "active" : ""}`}
+            className={`slot ${active ? "active" : ""} ${selectedDayIndex === dayOfWeek ? "slot-focused" : ""}`}
             onClick={() => toggleSlot(dayOfWeek, hour)}
             disabled={readOnly}
           >
@@ -29,10 +29,12 @@ function FragmentRow({ hour, activeSlots, toggleSlot, readOnly }) {
 
 export function AvailabilityGrid({ session, ownerQuery = "", readOnly = false }) {
   const [weekStart, setWeekStart] = useState(weekStartString());
-  const [mode, setMode] = useState("template");
+  const [mode, setMode] = useState("week");
   const [activeSlots, setActiveSlots] = useState(new Set());
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
+  const [selectedDayIndex, setSelectedDayIndex] = useState(0);
+  const weekDays = buildWeekDays(weekStart, session.user.timezone || "UTC");
 
   useEffect(() => {
     async function load() {
@@ -116,14 +118,41 @@ export function AvailabilityGrid({ session, ownerQuery = "", readOnly = false })
             <option value="template">Repeating template</option>
             <option value="week">This week only</option>
           </select>
-          <input type="date" value={weekStart} onChange={(event) => setWeekStart(event.target.value)} />
           {!readOnly && (
-            <button disabled={saving} onClick={saveChanges}>
+            <button className="primary-schedule-button" disabled={saving} onClick={saveChanges}>
               {saving ? "Saving..." : "Save"}
             </button>
           )}
         </div>
       </div>
+      {mode === "week" && (
+        <div className="calendar-strip">
+          <div className="calendar-strip-header">
+            <div>
+              <strong>{formatWeekRangeLabel(weekStart, session.user.timezone || "UTC")}</strong>
+              <span>Choose the week you want to edit, then tap slots for that day.</span>
+            </div>
+            <label className="calendar-date-input">
+              <span>Week of</span>
+              <input type="date" value={weekStart} onChange={(event) => setWeekStart(weekStartString(new Date(`${event.target.value}T12:00:00`)))} />
+            </label>
+          </div>
+          <div className="calendar-day-row">
+            {weekDays.map((day, index) => (
+              <button
+                key={day.date}
+                type="button"
+                className={`calendar-day-card ${selectedDayIndex === index ? "calendar-day-card-active" : ""}`}
+                onClick={() => setSelectedDayIndex(index)}
+              >
+                <span>{day.weekday}</span>
+                <strong>{day.dayNumber}</strong>
+                <small>{day.month}</small>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
       <div className="grid">
         <div></div>
         {DAYS.map((day) => <div key={day} className="grid-head">{day}</div>)}
@@ -134,6 +163,7 @@ export function AvailabilityGrid({ session, ownerQuery = "", readOnly = false })
             activeSlots={activeSlots}
             toggleSlot={toggleSlot}
             readOnly={readOnly}
+            selectedDayIndex={selectedDayIndex}
           />
         ))}
       </div>

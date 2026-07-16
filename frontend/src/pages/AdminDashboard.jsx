@@ -1,13 +1,17 @@
 import { useEffect, useState } from "react";
 import { CALL_TYPE_OPTIONS, HOURS, TIMEZONE_OPTIONS } from "../constants";
 import { api } from "../services/api";
-import { buildOverlapDays, formatDateTime, formatDayLabel, formatSlotRange, weekStartString } from "../utils/date";
+import { buildOverlapDays, buildWeekDays, formatDateTime, formatDayLabel, formatSlotRange, formatWeekRangeLabel, slotToFormValues, weekStartString } from "../utils/date";
 import { MentorEditorDark } from "../components/admin/MentorEditorDark";
+import { useMeetings } from "../hooks/useMeetings";
+import { DarkMeetingsView } from "../components/shared/DarkMeetingsView";
 
 export function AdminDashboard({ session }) {
   const [users, setUsers] = useState([]);
   const [mentors, setMentors] = useState([]);
   const [timezone, setTimezone] = useState("UTC");
+  const [workspaceTab, setWorkspaceTab] = useState("availability");
+  const [weekStart, setWeekStart] = useState(weekStartString());
   const [selectedUserId, setSelectedUserId] = useState("");
   const [selectedCallType, setSelectedCallType] = useState("RESUME_REVAMP");
   const [recommendations, setRecommendations] = useState([]);
@@ -21,16 +25,28 @@ export function AdminDashboard({ session }) {
     extraEmails: [""],
   });
   const [overlap, setOverlap] = useState(null);
+  const [selectedCommonSlot, setSelectedCommonSlot] = useState(null);
   const [userWeek, setUserWeek] = useState(null);
   const [mentorWeek, setMentorWeek] = useState(null);
   const [status, setStatus] = useState("");
   const [mentorStatus, setMentorStatus] = useState("");
+  const [checkingOverlap, setCheckingOverlap] = useState(false);
+  const [scheduling, setScheduling] = useState(false);
+  const { meetings, reloadMeetings } = useMeetings(session.token, session.user);
 
   const selectedUser = users.find((user) => user.id === selectedUserId);
   const selectedMentor = recommendations.find((mentor) => mentor.id === selectedMentorId)
     || mentors.find((mentor) => mentor.id === selectedMentorId);
   const timezoneMeta = TIMEZONE_OPTIONS.find((option) => option.value === timezone) || TIMEZONE_OPTIONS[0];
   const overlapDays = buildOverlapDays(userWeek, mentorWeek);
+  const weekDays = buildWeekDays(weekStart, timezone);
+  const selectedBookingDate = booking.date || weekStart;
+  const selectedDayRow = selectedBookingDate;
+
+  useEffect(() => {
+    setSelectedCommonSlot(null);
+    setOverlap(null);
+  }, [selectedUserId, selectedMentorId, selectedCallType, timezone]);
 
   useEffect(() => {
     Promise.all([
@@ -65,7 +81,6 @@ export function AdminDashboard({ session }) {
   useEffect(() => {
     async function loadWeeklyAvailability() {
       if (!selectedUserId || !selectedMentorId) return;
-      const weekStart = weekStartString();
       try {
         const [userAvailability, mentorAvailability] = await Promise.all([
           api(`/api/availability/weekly?weekStart=${weekStart}&userId=${selectedUserId}`, { token: session.token }),
@@ -79,7 +94,23 @@ export function AdminDashboard({ session }) {
     }
 
     loadWeeklyAvailability();
-  }, [selectedUserId, selectedMentorId, session.token]);
+  }, [selectedUserId, selectedMentorId, session.token, weekStart]);
+
+  useEffect(() => {
+    const firstAvailableSlot = overlapDays.flatMap((day) => day.commonSlots).find(Boolean);
+    if (!firstAvailableSlot) return;
+
+    const nextBookingValues = slotToFormValues(firstAvailableSlot.startTime, firstAvailableSlot.endTime, timezone);
+    setBooking((current) => {
+      if (current.date && current.startHour && current.endHour && selectedCommonSlot) {
+        return current;
+      }
+      return {
+        ...current,
+        ...nextBookingValues,
+      };
+    });
+  }, [overlapDays, timezone, selectedCommonSlot]);
 
   async function saveMentor(mentorId, nextFields) {
     setMentorStatus("");
@@ -103,9 +134,10 @@ export function AdminDashboard({ session }) {
       setStatus("Select a user, mentor, and date before checking overlap.");
       return;
     }
+    setCheckingOverlap(true);
     try {
-      const startTime = formatDateTime(booking.date, Number(booking.startHour));
-      const endTime = formatDateTime(booking.date, Number(booking.endHour));
+      const startTime = formatDateTime(booking.date, Number(booking.startHour), timezone);
+      const endTime = formatDateTime(booking.date, Number(booking.endHour), timezone);
       const result = await api(
         `/api/admin/availability/${selectedUserId}/overlap?mentorId=${selectedMentorId}&startTime=${encodeURIComponent(startTime)}&endTime=${encodeURIComponent(endTime)}`,
         { token: session.token }
@@ -114,6 +146,8 @@ export function AdminDashboard({ session }) {
       setStatus(result.overlap ? "Overlap confirmed for this slot." : "No overlap for the selected slot.");
     } catch (error) {
       setStatus(error.message);
+    } finally {
+      setCheckingOverlap(false);
     }
   }
 
@@ -124,10 +158,15 @@ export function AdminDashboard({ session }) {
       setStatus("Select a user, mentor, and date before scheduling.");
       return;
     }
+    if (Number(booking.endHour) <= Number(booking.startHour)) {
+      setStatus("End time must be later than start time.");
+      return;
+    }
+    setScheduling(true);
     try {
+      const startTime = formatDateTime(booking.date, Number(booking.startHour), timezone);
+      const endTime = formatDateTime(booking.date, Number(booking.endHour), timezone);
       const mentor = recommendations.find((item) => item.id === selectedMentorId) || mentors.find((item) => item.id === selectedMentorId);
-      const startTime = formatDateTime(booking.date, Number(booking.startHour));
-      const endTime = formatDateTime(booking.date, Number(booking.endHour));
 
       const result = await api("/api/admin/meetings", {
         method: "POST",
@@ -144,10 +183,26 @@ export function AdminDashboard({ session }) {
           participantEmails: booking.extraEmails.map((email) => email.trim()).filter(Boolean),
         },
       });
+      setOverlap({ overlap: true, userAvailable: true, mentorAvailable: true });
       setStatus(`Booked ${result.title}.`);
+      reloadMeetings();
     } catch (error) {
       setStatus(error.message);
+      if (error.message === "Selected slot is not available for both participants") {
+        setOverlap({ overlap: false, userAvailable: false, mentorAvailable: false });
+      }
+    } finally {
+      setScheduling(false);
     }
+  }
+
+  async function deleteMeeting(meetingId) {
+    await api(`/api/meetings/${meetingId}`, {
+      method: "DELETE",
+      token: session.token,
+    });
+    reloadMeetings();
+    setStatus("Meeting deleted.");
   }
 
   return (
@@ -175,7 +230,7 @@ export function AdminDashboard({ session }) {
                 <span>User</span>
                 <select value={selectedUserId} onChange={(event) => setSelectedUserId(event.target.value)}>
                   <option value="">Select user</option>
-                  {users.map((user) => <option key={user.id} value={user.id}>{user.name}</option>)}
+                  {users.map((user) => <option key={user.id} value={user.id}>{user.email}</option>)}
                 </select>
               </label>
               <label className="dark-field">
@@ -183,7 +238,7 @@ export function AdminDashboard({ session }) {
                 <select value={selectedMentorId} onChange={(event) => setSelectedMentorId(event.target.value)}>
                   <option value="">Select mentor</option>
                   {(recommendations.length ? recommendations : mentors).map((mentor) => (
-                    <option key={mentor.id} value={mentor.id}>{mentor.name}</option>
+                    <option key={mentor.id} value={mentor.id}>{mentor.email}</option>
                   ))}
                 </select>
               </label>
@@ -200,51 +255,108 @@ export function AdminDashboard({ session }) {
               <span>Mentor: {selectedMentor?.email || "None selected"}</span>
               <span>Showing today and next 6 days ({timezoneMeta.short})</span>
             </div>
+            <div className="tab-header">
+              <div className="tab-group">
+                <button type="button" className={`tab-pill ${workspaceTab === "availability" ? "tab-pill-active" : ""}`} onClick={() => setWorkspaceTab("availability")}>
+                  Availability
+                </button>
+                <button type="button" className={`tab-pill ${workspaceTab === "scheduled" ? "tab-pill-active" : ""}`} onClick={() => setWorkspaceTab("scheduled")}>
+                  Scheduled meetings
+                </button>
+              </div>
+            </div>
 
-            <section className="meetings-board">
-              <div className="meetings-board-header">
-                <div>
-                  <strong>Meetings</strong>
-                  <span>Common available times for selected user and mentor</span>
-                </div>
-              </div>
-              <div className="meeting-columns">
-                {overlapDays.map((day) => {
-                  const label = formatDayLabel(day.date, timezone);
-                  return (
-                    <article key={day.date} className="meeting-day-card">
-                      <header>
-                        <strong>{label.weekday}</strong>
-                        <span>{label.dayMonth}</span>
-                      </header>
-                      <div className="meeting-slot-stack">
-                        {day.commonSlots.length === 0 && <span className="empty-slot">No availability</span>}
-                        {day.commonSlots.slice(0, 3).map((slot) => (
-                          <button
-                            type="button"
-                            key={slot.startTime}
-                            className="meeting-pill"
-                            onClick={() => {
-                              const hour = new Date(slot.startTime).getUTCHours();
-                              const endHour = new Date(slot.endTime).getUTCHours();
-                              setBooking((current) => ({
-                                ...current,
-                                date: slot.startTime.slice(0, 10),
-                                startHour: String(hour),
-                                endHour: String(endHour),
-                              }));
-                            }}
-                          >
-                            <strong>{CALL_TYPE_OPTIONS.find((item) => item.value === selectedCallType)?.label}</strong>
-                            <span>{formatSlotRange(slot.startTime, slot.endTime, timezone, timezoneMeta.short)}</span>
-                          </button>
-                        ))}
+            {workspaceTab === "availability" && (
+              <>
+                <section className="meetings-board">
+                  <div className="meetings-board-header">
+                    <div>
+                      <strong>Common times</strong>
+                      <span>Availability loaded for the selected user and mentor across the selected week</span>
+                    </div>
+                  </div>
+                  <div className="calendar-strip calendar-strip-admin">
+                    <div className="calendar-strip-header">
+                      <div>
+                        <strong>{formatWeekRangeLabel(weekStart, timezone)}</strong>
+                        <span>Pick a week, then choose a day card to focus matching slots faster.</span>
                       </div>
-                    </article>
-                  );
-                })}
-              </div>
-            </section>
+                      <label className="calendar-date-input">
+                        <span>Week of</span>
+                        <input type="date" value={weekStart} onChange={(event) => setWeekStart(weekStartString(new Date(`${event.target.value}T12:00:00`)))} />
+                      </label>
+                    </div>
+                    <div className="calendar-day-row">
+                      {weekDays.map((day) => (
+                        <button
+                          key={day.date}
+                          type="button"
+                          className={`calendar-day-card ${selectedBookingDate === day.date ? "calendar-day-card-active" : ""}`}
+                          onClick={() => {
+                            setBooking((current) => ({ ...current, date: day.date }));
+                            setSelectedCommonSlot(null);
+                            setOverlap(null);
+                          }}
+                        >
+                          <span>{day.weekday}</span>
+                          <strong>{day.dayNumber}</strong>
+                          <small>{day.month}</small>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="availability-table-header">
+                    <span>Date</span>
+                    <span>User availability</span>
+                    <span>Mentor availability</span>
+                    <span>Common times</span>
+                  </div>
+                  <div className="availability-table">
+                    {overlapDays.map((day) => {
+                      const label = formatDayLabel(day.date, timezone);
+                      const userCount = userWeek?.availability?.[day.date]?.length || 0;
+                      const mentorCount = mentorWeek?.availability?.[day.date]?.length || 0;
+                      return (
+                        <article key={day.date} className={`availability-row ${selectedDayRow === day.date ? "availability-row-active" : ""}`}>
+                          <div className="availability-row-date">
+                            <strong>{label.weekday}</strong>
+                            <span>{label.dayMonth}</span>
+                          </div>
+                          <div className="availability-row-meta">{userCount ? `${userCount} slots` : "No availability"}</div>
+                          <div className="availability-row-meta">{mentorCount ? `${mentorCount} slots` : "No availability"}</div>
+                          <div className="meeting-slot-stack">
+                            {day.commonSlots.length === 0 && <span className="empty-slot">No availability</span>}
+                            {day.commonSlots.slice(0, 3).map((slot) => (
+                              <button
+                                type="button"
+                                key={slot.startTime}
+                                className="meeting-pill"
+                                onClick={() => {
+                                  const formValues = slotToFormValues(slot.startTime, slot.endTime, timezone);
+                                setBooking((current) => ({
+                                  ...current,
+                                  ...formValues,
+                                }));
+                                setSelectedCommonSlot(slot.startTime);
+                                setOverlap({ overlap: true, userAvailable: true, mentorAvailable: true });
+                              }}
+                            >
+                                <strong>{CALL_TYPE_OPTIONS.find((item) => item.value === selectedCallType)?.label}</strong>
+                                <span>{formatSlotRange(slot.startTime, slot.endTime, timezone, timezoneMeta.short)}</span>
+                              </button>
+                            ))}
+                          </div>
+                        </article>
+                      );
+                    })}
+                  </div>
+                </section>
+              </>
+            )}
+
+            {workspaceTab === "scheduled" && (
+              <DarkMeetingsView meetings={meetings} canDelete onDelete={deleteMeeting} emptyTitle="No scheduled meetings yet" emptyBody="Booked events will appear here in separate tabs." />
+            )}
 
             <section className="admin-info-grid">
               <div className="dark-panel">
@@ -396,8 +508,12 @@ export function AdminDashboard({ session }) {
                 <textarea rows={3} value={booking.notes} onChange={(event) => setBooking({ ...booking, notes: event.target.value })} />
               </label>
               <div className="schedule-actions">
-                <button type="button" className="ghost-button" onClick={checkOverlap}>Check overlap</button>
-                <button type="submit" className="primary-schedule-button">Schedule Meeting</button>
+                <button type="button" className="ghost-button" onClick={checkOverlap} disabled={checkingOverlap || scheduling}>
+                  {checkingOverlap ? "Checking..." : "Check overlap"}
+                </button>
+                <button type="submit" className="primary-schedule-button" disabled={scheduling || !selectedUserId || !selectedMentorId || !booking.date}>
+                  {scheduling ? "Scheduling..." : "Schedule Meeting"}
+                </button>
               </div>
               {overlap && <p className={`muted-light ${overlap.overlap ? "success" : "error"}`}>{overlap.overlap ? "Selected slot is available for both sides." : "This slot does not overlap for both sides."}</p>}
               {status && <p className="muted-light">{status}</p>}
