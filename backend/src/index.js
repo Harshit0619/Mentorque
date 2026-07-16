@@ -30,6 +30,10 @@ app.get("/health", (_, res) => res.json({ ok: true }));
 
 app.use(errorHandler);
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+export default app;
+
+if (process.env.VERCEL !== "1" && process.env.NODE_ENV !== "production") {
+  app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+  });
+}
