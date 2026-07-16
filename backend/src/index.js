@@ -10,11 +10,17 @@ import { errorHandler } from "./middleware/errorHandler.js";
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:5173";
+const FRONTEND_URL = process.env.FRONTEND_URL || "https://mentorque-omega.vercel.app";
 
 app.use(
   cors({
-    origin: FRONTEND_URL,
+    origin(origin, callback) {
+      if (!origin) return callback(null, true);
+      if (origin === FRONTEND_URL) return callback(null, true);
+      if (origin === "http://localhost:5173") return callback(null, true);
+      if (origin === "http://localhost:4173") return callback(null, true);
+      return callback(new Error(`CORS blocked for origin ${origin}`));
+    },
     credentials: true,
   })
 );
