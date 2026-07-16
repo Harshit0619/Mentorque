@@ -269,4 +269,4 @@ npm run db:seed
 
 - This app uses role-based flows for `USER`, `MENTOR`, and `ADMIN`
 - Meeting booking is admin-led
-- Availability is managed through weekly slot selection
+- Availability is managed through weekly slot selections
